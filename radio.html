@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>radio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #ffffff;
+            color: #000000;
+            -webkit-tap-highlight-color: transparent;
+        }
+        ::-webkit-scrollbar {
+            width: 3px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #d1d5db;
+        }
+        .thin-border {
+            border: 1px solid #e5e7eb;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between p-6 max-w-md mx-auto select-none">
+
+    <!-- Header -->
+    <header class="w-full text-center py-6">
+        <h1 class="text-2xl font-light tracking-widest uppercase">RADIO</h1>
+        <p id="global-status" class="text-[10px] text-gray-400 mt-1 tracking-widest font-mono">STATUS: OFF AIR</p>
+    </header>
+
+    <!-- Navigation / Mode Switcher -->
+    <nav class="w-full flex border border-black text-xs font-mono mb-8">
+        <button id="btn-listener" onclick="switchMode('listener')" class="flex-1 py-3 text-center bg-black text-white transition-all">
+            LISTEN
+        </button>
+        <button id="btn-host" onclick="switchMode('host')" class="flex-1 py-3 text-center text-gray-500 hover:text-black transition-all">
+            HOST
+        </button>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="w-full flex-1 flex flex-col justify-between">
+        
+        <!-- LISTENER VIEW -->
+        <section id="view-listener" class="flex-1 flex flex-col justify-between">
+            <!-- Audio Receiver Controls -->
+            <div class="thin-border p-6 text-center my-auto">
+                <p class="text-[10px] text-gray-400 tracking-widest font-mono mb-6">AUDIO RECEIVER</p>
+                <button id="listen-play-btn" onclick="toggleListen()" class="w-16 h-16 rounded-full border border-black text-lg mx-auto flex items-center justify-center active:scale-95 transition-all">
+                    ▶
+                </button>
+                <p id="listen-status" class="text-xs text-gray-400 mt-6 font-mono">방송 대기 중</p>
+            </div>
+
+            <!-- Comments Section -->
+            <div class="mt-6 flex flex-col flex-1 max-h-[220px]">
+                <div class="text-[10px] text-gray-400 font-mono mb-2 tracking-widest">COMMENTS</div>
+                <div id="listener-comments" class="flex-1 thin-border p-3 overflow-y-auto space-y-2 text-xs font-light">
+                    <div class="text-gray-300 text-center py-6 font-mono">No comments yet.</div>
+                </div>
+
+                <!-- Input -->
+                <form onsubmit="sendComment(event)" class="mt-3 flex">
+                    <input type="text" id="comment-input" placeholder="메시지 입력..." required class="flex-1 p-2 text-xs thin-border focus:outline-none focus:border-black rounded-none">
+                    <button type="submit" class="px-4 bg-black text-white text-xs active:bg-gray-800 transition-all rounded-none">
+                        전송
+                    </button>
+                </form>
+            </div>
+        </section>
+
+        <!-- HOST VIEW -->
+        <section id="view-host" class="flex-1 flex flex-col justify-between hidden">
+            <!-- Mic Broadcast Controls -->
+            <div class="thin-border p-6 text-center my-auto">
+                <p class="text-[10px] text-gray-400 tracking-widest font-mono mb-6">LIVE BROADCAST</p>
+                <button id="host-mic-btn" onclick="toggleBroadcast()" class="w-20 h-20 rounded-full border border-black text-xs font-mono mx-auto flex items-center justify-center active:scale-95 transition-all">
+                    START
+                </button>
+                
+                <!-- Simple Meter -->
+                <div class="w-full bg-gray-100 h-1 mt-6">
+                    <div id="mic-level" class="bg-black h-full w-0 transition-all duration-75"></div>
+                </div>
+                <p id="host-status" class="text-xs text-gray-400 mt-3 font-mono">마이크 꺼짐</p>
+            </div>
+
+            <!-- Received Comments Section -->
+            <div class="mt-6 flex flex-col flex-1 max-h-[220px]">
+                <div class="text-[10px] text-gray-400 font-mono mb-2 tracking-widest">RECEIVED COMMENTS</div>
+                <div id="host-comments" class="flex-1 thin-border p-3 overflow-y-auto space-y-2 text-xs font-light">
+                    <div class="text-gray-300 text-center py-6 font-mono">No comments yet.</div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="w-full text-center py-4 text-[9px] text-gray-300 font-mono tracking-widest">
+        RADIO ARCHITECTURE
+    </footer>
+
+    <script>
+        // Realtime Inter-tab Communication
+        const channel = new BroadcastChannel('radio_app_channel');
+
+        let mode = 'listener';
+        let isBroadcasting = false;
+        let isListening = false;
+        let comments = [];
+
+        // Audio Context & Streams (Host)
+        let hostAudioCtx = null;
+        let micStream = null;
+        let scriptProcessor = null;
+        let analyser = null;
+
+        // Audio Context & Playback (Listener)
+        let listenerAudioCtx = null;
+        let nextPlayTime = 0;
+
+        function switchMode(newMode) {
+            mode = newMode;
+            const btnListener = document.getElementById('btn-listener');
+            const btnHost = document.getElementById('btn-host');
+            const viewListener = document.getElementById('view-listener');
+            const viewHost = document.getElementById('view-host');
+
+            if (mode === 'listener') {
+                btnListener.className = "flex-1 py-3 text-center bg-black text-white transition-all";
+                btnHost.className = "flex-1 py-3 text-center text-gray-500 hover:text-black transition-all";
+                viewListener.classList.remove('hidden');
+                viewHost.classList.add('hidden');
+            } else {
+                btnHost.className = "flex-1 py-3 text-center bg-black text-white transition-all";
+                btnListener.className = "flex-1 py-3 text-center text-gray-500 hover:text-black transition-all";
+                viewHost.classList.remove('hidden');
+                viewListener.classList.add('hidden');
+            }
+        }
+
+        // --- HOST BROADCASTING ---
+        async function toggleBroadcast() {
+            if (!isBroadcasting) {
+                try {
+                    micStream = await navigator.mediaDevices.getUserMedia({
+                        audio: { echoCancellation: true, noiseSuppression: true },
+                        video: false
+                    });
+
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    hostAudioCtx = new AudioCtx();
+                    const source = hostAudioCtx.createMediaStreamSource(micStream);
+
+                    analyser = hostAudioCtx.createAnalyser();
+                    analyser.fftSize = 64;
+                    source.connect(analyser);
+
+                    scriptProcessor = hostAudioCtx.createScriptProcessor(2048, 1, 1);
+                    scriptProcessor.onaudioprocess = (e) => {
+                        if (!isBroadcasting) return;
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        const pcm = new Float32Array(inputData);
+                        channel.postMessage({
+                            type: 'AUDIO_PCM',
+                            pcm: pcm.buffer,
+                            sampleRate: hostAudioCtx.sampleRate
+                        }, [pcm.buffer]);
+                    };
+
+                    source.connect(scriptProcessor);
+                    scriptProcessor.connect(hostAudioCtx.destination);
+
+                    isBroadcasting = true;
+                    updateHostUI(true);
+                    updateMicLevel();
+
+                    channel.postMessage({ type: 'STATUS', broadcasting: true });
+
+                } catch (err) {
+                    alert('마이크 접근에 실패했거나 권한이 없습니다: ' + err.message);
+                }
+            } else {
+                stopBroadcast();
+            }
+        }
+
+        function stopBroadcast() {
+            if (scriptProcessor) scriptProcessor.disconnect();
+            if (hostAudioCtx) hostAudioCtx.close();
+            if (micStream) micStream.getTracks().forEach(t => t.stop());
+
+            isBroadcasting = false;
+            updateHostUI(false);
+            channel.postMessage({ type: 'STATUS', broadcasting: false });
+        }
+
+        function updateMicLevel() {
+            if (!isBroadcasting || !analyser) return;
+            const data = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteFrequencyData(data);
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) sum += data[i];
+            const avg = sum / data.length;
+            const width = Math.min(100, Math.round((avg / 128) * 100));
+            document.getElementById('mic-level').style.width = width + '%';
+            requestAnimationFrame(updateMicLevel);
+        }
+
+        function updateHostUI(onAir) {
+            const btn = document.getElementById('host-mic-btn');
+            const status = document.getElementById('host-status');
+            const globalStatus = document.getElementById('global-status');
+
+            if (onAir) {
+                btn.innerText = 'STOP';
+                btn.classList.add('bg-black', 'text-white');
+                status.innerText = '방송 중 (LIVE)';
+                globalStatus.innerText = 'STATUS: ON AIR';
+                globalStatus.classList.add('text-black');
+            } else {
+                btn.innerText = 'START';
+                btn.classList.remove('bg-black', 'text-white');
+                status.innerText = '마이크 꺼짐';
+                globalStatus.innerText = 'STATUS: OFF AIR';
+                globalStatus.classList.remove('text-black');
+                document.getElementById('mic-level').style.width = '0%';
+            }
+        }
+
+        // --- LISTENER RECEIVING ---
+        async function toggleListen() {
+            isListening = !isListening;
+            const btn = document.getElementById('listen-play-btn');
+
+            if (isListening) {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!listenerAudioCtx) {
+                    listenerAudioCtx = new AudioCtx();
+                }
+                if (listenerAudioCtx.state === 'suspended') {
+                    await listenerAudioCtx.resume();
+                }
+                nextPlayTime = listenerAudioCtx.currentTime;
+                btn.innerText = '❚❚';
+            } else {
+                btn.innerText = '▶';
+            }
+        }
+
+        function playAudioPCM(buffer, sampleRate) {
+            if (!isListening || !listenerAudioCtx) return;
+
+            const float32Data = new Float32Array(buffer);
+            if (float32Data.length === 0) return;
+
+            const audioBuf = listenerAudioCtx.createBuffer(1, float32Data.length, sampleRate);
+            audioBuf.getChannelData(0).set(float32Data);
+
+            const source = listenerAudioCtx.createBufferSource();
+            source.buffer = audioBuf;
+            source.connect(listenerAudioCtx.destination);
+
+            const now = listenerAudioCtx.currentTime;
+            if (nextPlayTime < now) {
+                nextPlayTime = now;
+            }
+
+            source.start(nextPlayTime);
+            nextPlayTime += audioBuf.duration;
+        }
+
+        // --- CHANNEL MESSAGES ---
+        channel.onmessage = (e) => {
+            const data = e.data;
+            if (data.type === 'AUDIO_PCM') {
+                playAudioPCM(data.pcm, data.sampleRate);
+            } else if (data.type === 'STATUS') {
+                const listenStatus = document.getElementById('listen-status');
+                const globalStatus = document.getElementById('global-status');
+                if (data.broadcasting) {
+                    listenStatus.innerText = '● 방송 중';
+                    globalStatus.innerText = 'STATUS: ON AIR';
+                } else {
+                    listenStatus.innerText = '방송 대기 중';
+                    globalStatus.innerText = 'STATUS: OFF AIR';
+                }
+            } else if (data.type === 'COMMENT') {
+                comments.push(data.payload);
+                renderComments();
+            }
+        };
+
+        // --- COMMENTS ---
+        function sendComment(e) {
+            e.preventDefault();
+            const input = document.getElementById('comment-input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            const time = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+            const item = { text, time };
+
+            comments.push(item);
+            renderComments();
+
+            channel.postMessage({ type: 'COMMENT', payload: item });
+            input.value = '';
+        }
+
+        function renderComments() {
+            const listenerBox = document.getElementById('listener-comments');
+            const hostBox = document.getElementById('host-comments');
+
+            if (comments.length === 0) return;
+
+            const html = comments.map(c => `
+                <div class="flex justify-between items-start border-b border-gray-100 pb-1">
+                    <span class="break-all font-sans">${escapeHtml(c.text)}</span>
+                    <span class="text-[9px] text-gray-300 font-mono ml-2 shrink-0">${c.time}</span>
+                </div>
+            `).join('');
+
+            listenerBox.innerHTML = html;
+            hostBox.innerHTML = html;
+
+            listenerBox.scrollTop = listenerBox.scrollHeight;
+            hostBox.scrollTop = hostBox.scrollHeight;
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+    </script>
+</body>
+</html>
